@@ -10,11 +10,15 @@ namespace {
 std::vector<std::vector<BYTE>> writes;
 std::vector<BYTE> feature;
 bool failEnter = false, failFeature = false, headsetOff = false, wrongMode = false;
+bool alreadyInMode = false, rejectNonEnter = false;
+int unrelatedReports = 0;
 int opens = 0, millivolts = 4146;
 void Reset() {
     writes.clear();
     feature.clear();
     failEnter = failFeature = headsetOff = wrongMode = false;
+    alreadyInMode = rejectNonEnter = false;
+    unrelatedReports = 0;
     millivolts = 4146;
 }
 }
@@ -41,7 +45,18 @@ bool HidDev::Write(const std::vector<BYTE>& w, int) {
     }
     return !(failEnter && w[1] == 1);
 }
-int HidDev::Read(std::vector<BYTE>& r, int) { r = { 6, 0x5A }; return 2; }
+int HidDev::Read(std::vector<BYTE>& r, int) {
+    if (unrelatedReports > 0) {
+        --unrelatedReports;
+        r = { 3, 0xE9 };  // unrelated HID input ahead of the ACK
+    } else if ((alreadyInMode && writes.back()[1] == 1) ||
+               (rejectNonEnter && writes.back()[1] == 4)) {
+        r = { 6, 0xFE };
+    } else {
+        r = { 6, 0x5A };
+    }
+    return (int)r.size();
+}
 bool HidDev::GetFeature(BYTE id, std::vector<BYTE>& r) {
     assert(id == 6);
     if (failFeature) return false;
@@ -56,6 +71,13 @@ int main() {
     Reset();
     assert(ReadBattery(d, off) == 4146 && !off);
     assert(writes.size() == 4 && writes.back()[1] == 8);
+    Reset(); unrelatedReports = 1;
+    assert(ReadBattery(d, off) == 4146 && !off);  // unrelated input before ENTER ACK
+    assert(writes.size() == 4 && writes.back()[1] == 8);
+    Reset(); alreadyInMode = true;
+    assert(ReadBattery(d, off) == 4146);  // FE is allowed for ENTER
+    Reset(); rejectNonEnter = true;
+    assert(ReadBattery(d, off) == -1 && writes.back()[1] == 8);  // FE rejects SEND
     Reset(); wrongMode = true;
     assert(ReadBattery(d, off) == 4146);
     assert(writes.size() == 6 && writes.back()[1] == 8);

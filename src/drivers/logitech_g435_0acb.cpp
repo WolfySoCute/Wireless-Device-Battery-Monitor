@@ -16,8 +16,21 @@ bool Bridge(HidDev& d, BYTE op, const std::vector<BYTE>& body = {}) {
     out.insert(out.end(), body.begin(), body.end());
     d.Flush();
     if (!d.Write(out, 200)) return false;
-    std::vector<BYTE> r;
-    return d.Read(r, 200) >= 2 && r[0] == 6 && (r[1] == 0x5A || r[1] == 0xFE);
+    // Unrelated input reports may arrive before the bridge ACK. Keep one
+    // absolute deadline so each ignored report cannot restart the timeout.
+    const ULONGLONG deadline = GetTickCount64() + 200;
+    for (;;) {
+        const ULONGLONG now = GetTickCount64();
+        if (now >= deadline) break;
+        std::vector<BYTE> r;
+        const int left = (int)(deadline - now);
+        if (d.Read(r, left) < 0) return false;
+        if (r.size() < 2 || r[0] != 6) continue;
+        if (r[1] == 0x5A) return true;
+        // 0xFE means "already in service mode", which is valid for ENTER only.
+        return op == 1 && r[1] == 0xFE;
+    }
+    return false;
 }
 
 struct Session {
